@@ -611,7 +611,8 @@ def list_services(token):
         sys.exit(1)
 
 
-def choose_from_list(items, label_fn):
+def choose_from_list(items, label_fn, title="Items:"):
+    print(f"\n{title}")
     for i, it in enumerate(items, start=1):
         print(f"{i:3d}) {label_fn(it)}")
     sel = input("Enter number (or q to quit): ").strip()
@@ -624,7 +625,7 @@ def choose_from_list(items, label_fn):
         return items[idx]
     except Exception:
         print("انتخاب نامعتبر، دوباره تلاش کن.")
-        return choose_from_list(items, label_fn)
+        return choose_from_list(items, label_fn, title)
 
 def main():
     # 1) DCR
@@ -637,43 +638,65 @@ def main():
         print("هیچ API ای یافت نشد.")
         return
     print("\nAPIs:")
-    chosen_api = choose_from_list(apis, lambda a: f"{a.get('name') or a.get('id')} - {a.get('version','')} ({a.get('id')})")
+    chosen_api = choose_from_list(apis, lambda a: f"{a.get('name') or a.get('id')} - {a.get('version','')} ({a.get('id')})", title="APIs:")
     api_id = chosen_api.get('id') or chosen_api.get('uuid') or chosen_api.get('apiId')
     api_obj = get_api(token, api_id)
     print("\nSelected API:")
     print(json.dumps({k: api_obj.get(k) for k in ('name','id','version','endpointConfig')}, indent=2))
+
+    # Extract API name and context for filtering
+    api_name = api_obj.get('name', '').lower()
+    api_context = api_obj.get('context', '').lower().lstrip('/').split('/')[0] if api_obj.get('context') else ''
 
     # 4) Services
     services = list_services(token)
     if not isinstance(services, list) or not services:
         print("Service catalog پاسخ نامعتبر یا خالی داد:", json.dumps(services, indent=2))
         sys.exit(1)
-    print("\nServices:")
-    chosen_svc = choose_from_list(services, lambda s: f"{s.get('name','<no-name>')} - {s.get('version','<no-version>')} - {s.get('serviceUrl','<no-url>')} ({s.get('id','')})")
+
+    # Filter services based on similarity to API name or context
+    filtered_services = []
+    for s in services:
+        s_name = s.get('name', '').lower()
+        s_url = s.get('serviceUrl', '').lower()
+        s_path = s_url.split('/')[-1] if '/' in s_url else ''  # extract last part of serviceUrl
+        if (api_name in s_name or s_name in api_name or
+            api_context in s_name or api_context in s_path or
+            api_name in s_path or api_context in s_url):
+            filtered_services.append(s)
+
+    label_fn = lambda s: f"{s.get('name','<no-name>')} - {s.get('version','<no-version>')} - {s.get('serviceUrl','<no-url>')} ({s.get('id','')})"
+
+    if filtered_services:
+        print("\nFiltered Services (based on similarity to API name/context):")
+        # Add option for show all
+        show_all_option = len(filtered_services) + 1
+        for i, s in enumerate(filtered_services, start=1):
+            print(f"{i:3d}) {label_fn(s)}")
+        print(f"{show_all_option:3d}) Show all services")
+
+        sel = input("Enter number (or q to quit): ").strip()
+        if sel.lower() == 'q':
+            sys.exit(0)
+        try:
+            idx = int(sel) - 1
+            if idx == len(filtered_services):
+                # Show all
+                chosen_svc = choose_from_list(services, label_fn, title="All Services:")
+            elif 0 <= idx < len(filtered_services):
+                chosen_svc = filtered_services[idx]
+            else:
+                raise ValueError()
+        except Exception:
+            print("انتخاب نامعتبر، دوباره تلاش کن.")
+            # Recursive call to retry
+            main()  # Or handle retry properly
+            return
+    else:
+        # No filtered, show all directly
+        chosen_svc = choose_from_list(services, label_fn, title="All Services (no filtered matches):")
+
     svc_url = chosen_svc.get('serviceUrl')
-
-    # # 5) Update endpointConfig
-    # # new_endpoint_config = {
-    # #     "endpoint_type": "http",
-    # #     "production_endpoints": {"url": svc_url, "config": None},
-    # #     "sandbox_endpoints": {"url": svc_url, "config": None}
-    # # }
-    # new_endpoint_config = {
-    #     "endpoint_type": "http",
-    #     "production_endpoints": {"url": svc_url, "config": {}},
-    #     "sandbox_endpoints": {"url": svc_url, "config": {}}
-    # }
-    # # api_obj['endpointConfig'] = json.dumps(new_endpoint_config)
-    # api_obj['endpointConfig'] = new_endpoint_config
-
-    # confirm = input(f"\nمی‌خوای endpoint API '{api_obj.get('name')}' را به '{svc_url}' تغییر بدهم؟ [y/N]: ").strip().lower()
-    # if confirm != 'y':
-    #     print("Aborted.")
-    #     return
-
-    # updated = update_api(token, api_id, api_obj)
-    # print("بروزرسانی موفق بود. پاسخ (partial):")
-    # print(json.dumps({k: updated.get(k) for k in ('name','id','version','endpointConfig')}, indent=2))
 
     # 5) Update endpointConfig
     # تصمیم می‌گیریم فقط در صورتی sandbox را ست کنیم که قبلاً موجود بوده باشد.
@@ -714,42 +737,6 @@ def main():
     updated = update_api(token, api_id, api_obj)
     print("بروزرسانی موفق بود. پاسخ (partial):")
     print(json.dumps({k: updated.get(k) for k in ('name','id','version','endpointConfig')}, indent=2))
-
-
-
-
-
-
-
-    # # 6) Create Revision و Deploy 
-    # print("بروزرسانی موفق بود. اکنون revision جدید می‌سازیم و آن را دیپلوی می‌کنیم...")
-    # desc = input("در صورت خواستن توضیح برای revision وارد کن (یا Enter برای بدون توضیح): ").strip() or None
-    # # اطمینان از ظرفیت ریویژن‌ها
-    # # ensure_revision_capacity(token, api_id, keep=4)
-    # ok_capacity = ensure_revision_capacity(token, api_id, limit=5)
-    # if not ok_capacity:
-    #     print("ظرفیت ریویژن‌ها پر است و نتوانستم قدیمی‌ها را پاک کنم. خروج.")
-    #     sys.exit(1)
-
-    # revision_id = create_revision(token, api_id, description=desc)
-    # if not revision_id:
-    #     print("ایجاد revision ناموفق بود. خروج.")
-    #     sys.exit(1)
-    # print(f"Revision ایجاد شد: {revision_id}")
-
-    # # # انتخاب Gateways: پیش‌فرض 'Default' است — میتوانید این را از کاربر بپرسید یا لیست محیط‌ها را فراخوانی کنید
-    # # gateway = input("نام Gateway environment برای دیپلوی (پیش‌فرض 'Default'): ").strip() or "Default"
-    # # vhost = input("vhost برای دیپلوی (در صورت نیاز، خالی بگذارید): ").strip() or ""
-    # # display = input("نمایش در Dev Portal؟ [Y/n] (پیش‌فرض Y): ").strip().lower()
-    # # display_flag = False if display == 'n' else True
-
-    # # ok = deploy_revision(token, api_id, revision_id, gateway_name=gateway, vhost=vhost, displayOnDevportal=display_flag)
-    # # if not ok:
-    # #     print("Deploy ناموفق بود. لطفاً لاگ‌ها و پاسخ سرور را چک کن.")
-    # #     sys.exit(1)
-    # # print("Revision با موفقیت دیپلوی شد.")
-
-
 
     # ---------- revision management ----------
     # Ensure capacity (will undeploy+delete old revisions if needed)
